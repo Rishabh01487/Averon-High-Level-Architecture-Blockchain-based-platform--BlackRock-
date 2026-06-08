@@ -1,0 +1,358 @@
+# Averon v3 — Full Asset Tokenization Platform with AI & Proper Database
+
+## The Vision
+
+Averon is NOT like Bitcoin. In Bitcoin, you buy coins hoping the price goes up. In Averon:
+
+1. **Users buy Averon Coins** with real INR (via Razorpay/UPI)
+2. **Asset owners list real-world assets** — shares, land, agricultural goods, shop inventory, bills, equipment — anything of value
+3. **AI analyzes uploaded documents** — verifies legitimacy, determines value, performs risk analysis
+4. **AI tokenizes the asset** — breaks the asset value into smaller tokens (e.g., ₹50,000 asset → 100 tokens × ₹500)
+5. **The client raises only what they need** — e.g., ₹5,000 from a ₹50,000 asset
+6. **Platform auto-funds** — when enough investors buy tokens, Averon Coins are converted to real cash and paid to the asset owner
+7. **Every capital raise increases coin price** — early coin buyers profit as the platform grows
+8. **P2P trading** — users can sell coins to each other on the platform
+
+```mermaid
+graph LR
+    A["Asset Owner"] -->|Upload Documents| B["AI Analysis Engine"]
+    B -->|Verify & Value| C["Tokenization Engine"]
+    C -->|Create Tokens| D["Asset Listing"]
+    E["Investors"] -->|Buy Averon Coins| F["Coin Pool"]
+    E -->|Invest Tokens| D
+    D -->|Fully Funded| G["Capital Distribution"]
+    G -->|Real Cash ₹| A
+    G -->|Price Goes Up| F
+    E -->|Sell Coins| H["P2P Marketplace"]
+```
+
+---
+
+## Proposed Changes
+
+### Backend Database — SQLite
+
+#### [NEW] [database.js](file:///d:/Averon/database.js)
+
+Replace JSON files with a proper **SQLite database** using `better-sqlite3` (embedded, no separate server needed).
+
+**Tables:**
+
+| Table | Purpose |
+|-------|---------|
+| `users` | User accounts, names, organizations |
+| `wallets` | Blockchain wallet keys per user |
+| `averon_coins` | Coin balances, purchase history |
+| `assets` | Listed real-world assets |
+| `asset_documents` | Uploaded documents per asset |
+| `ai_analyses` | AI analysis results (valuation, risk, verdict) |
+| `asset_tokens` | Tokenized chunks of an asset |
+| `token_holdings` | Which user owns which tokens |
+| `investments` | Investment records |
+| `capital_raises` | Funded assets, payout records |
+| `coin_orders` | P2P buy/sell order book |
+| `coin_trades` | Completed P2P trades |
+| `transactions` | All blockchain transactions |
+| `blocks` | All mined blocks |
+| `price_history` | Averon Coin price over time |
+| `notifications` | User notifications |
+
+**Schema highlights:**
+```sql
+CREATE TABLE assets (
+  id INTEGER PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  category TEXT,             -- 'shares', 'land', 'commodity', 'inventory', 'equipment', etc.
+  ai_verified BOOLEAN DEFAULT 0,
+  ai_valuation REAL,         -- AI-determined value in INR
+  ai_risk_score REAL,        -- 0.0 (safe) to 1.0 (risky)
+  ai_risk_level TEXT,        -- 'LOW', 'MEDIUM', 'HIGH'
+  ai_analysis_summary TEXT,  -- AI explanation
+  total_value REAL,          -- Verified asset value
+  raise_amount REAL,         -- How much the owner wants to raise
+  token_count INTEGER,       -- How many tokens AI created
+  token_price REAL,          -- Price per token in Averon Coin
+  status TEXT DEFAULT 'pending_review', -- pending_review → ai_analyzing → verified → active → funded → rejected
+  funded_amount REAL DEFAULT 0,
+  payout_status TEXT DEFAULT 'pending', -- pending → processing → paid
+  created_at INTEGER,
+  deadline INTEGER
+);
+
+CREATE TABLE asset_tokens (
+  id INTEGER PRIMARY KEY,
+  asset_id INTEGER,
+  token_index INTEGER,       -- Token #1, #2, ... #N
+  owner_id TEXT,             -- Current owner (NULL = available)
+  price REAL,                -- Price in Averon Coin
+  purchased_at INTEGER,
+  FOREIGN KEY (asset_id) REFERENCES assets(id)
+);
+```
+
+---
+
+### AI Analysis Engine
+
+#### [NEW] [ai-engine.js](file:///d:/Averon/ai-engine.js)
+
+Integrates with **Google Gemini API** to analyze uploaded documents.
+
+**What the AI does:**
+
+1. **Document Verification** — Reads uploaded documents (images/PDFs of share certificates, land papers, invoices, inventory lists) and verifies they appear legitimate
+2. **Asset Valuation** — Determines the market value based on document content and category
+3. **Risk Analysis** — Assigns a risk score (0–100%) based on asset type, documentation quality, market conditions
+4. **Tokenization Recommendation** — Suggests optimal token count and price based on raise amount and risk level
+
+**AI Prompt Structure:**
+```
+You are an asset valuation AI for the Averon tokenization platform.
+
+Analyze this [asset_type] document and provide:
+1. VERIFIED: true/false — does this appear to be a legitimate document?
+2. ESTIMATED_VALUE: number in INR — market value of the asset
+3. RISK_SCORE: 0-100 — how risky is this asset (0=safe, 100=very risky)
+4. RISK_LEVEL: LOW/MEDIUM/HIGH
+5. SUGGESTED_TOKENS: number — recommended token count for ₹[raise_amount] raise
+6. TOKEN_PRICE: number in Averon Coin — suggested per-token price
+7. ANALYSIS: 2-3 sentence summary of findings
+8. CONCERNS: any red flags or concerns
+```
+
+**Flow:**
+```mermaid
+sequenceDiagram
+    User->>Server: Upload documents + asset details
+    Server->>AI Engine: Analyze documents
+    AI Engine->>Gemini API: Send documents + prompt
+    Gemini API-->>AI Engine: Analysis result
+    AI Engine->>Database: Store analysis
+    AI Engine-->>Server: Verification result
+    Server-->>User: Show AI analysis + token proposal
+    User->>Server: Confirm listing
+    Server->>Blockchain: ASSET_CREATE transaction
+    Server->>Database: Create tokens
+```
+
+> [!IMPORTANT]
+> **Gemini API Key required** — The user will need to set `GEMINI_API_KEY` in `.env`. Without it, the AI analysis will use a simulated fallback that estimates values based on category and document metadata.
+
+---
+
+### Document Upload System
+
+#### [NEW] [uploads/](file:///d:/Averon/uploads/) (directory)
+
+Stores uploaded asset documents.
+
+**Server changes:**
+- Uses `multer` middleware for file uploads
+- Accepts images (JPG, PNG) and PDFs
+- Max 5 files per asset, 10MB each
+- Files stored as `uploads/{assetId}/{filename}`
+
+---
+
+### Tokenization Engine
+
+#### [NEW] [tokenizer.js](file:///d:/Averon/tokenizer.js)
+
+Takes AI analysis results and creates tokens.
+
+**Logic:**
+```
+Input:  Asset value = ₹50,000 | Raise amount = ₹5,000 | Risk score = 25%
+Output: 10 tokens × 500 Averon Coin each
+
+Factors:
+- Lower risk → fewer, higher-value tokens (more investor-friendly)
+- Higher risk → more, smaller tokens (spreads risk)
+- Min token price: 10 AC | Max token price: 5000 AC
+- Min tokens: 2 | Max tokens: 1000
+```
+
+---
+
+### Capital Raising & Payout System
+
+#### [NEW] [capital.js](file:///d:/Averon/capital.js)
+
+Handles the flow when an asset is fully funded.
+
+**When all tokens are sold:**
+1. Asset status → `funded`
+2. Total Averon Coins collected → converted to INR at current rate
+3. Asset owner receives payout (recorded, actual transfer via Razorpay if configured)
+4. Averon Coin price increases (+2-5% per funded asset, scaled by raise amount)
+5. All token holders now own fractional rights to the asset
+6. Blockchain: FUND_COMPLETE transaction recorded
+
+---
+
+### P2P Coin Trading
+
+#### [NEW] [marketplace.js](file:///d:/Averon/marketplace.js)
+
+Simple order-book-style peer-to-peer trading.
+
+**How it works:**
+- Sellers place sell orders: "I want to sell X Averon Coins at ₹Y each"
+- Buyers place buy orders: "I want to buy X Averon Coins at ₹Y each"
+- When a buy order matches a sell order → trade executes automatically
+- Trade creates TRANSFER transactions on the blockchain
+- Order book visible to all users
+
+**API:**
+- `POST /api/market/sell` — place a sell order
+- `POST /api/market/buy` — place a buy order
+- `GET /api/market/orderbook` — view current orders
+- `GET /api/market/trades` — recent trades
+- `DELETE /api/market/order/:id` — cancel an order
+
+---
+
+### Server Refactor
+
+#### [MODIFY] [server.js](file:///d:/Averon/server.js)
+
+Major restructure into modular routes:
+
+**New API endpoints:**
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/assets/create` | Upload documents + create asset listing |
+| `GET /api/assets` | List all assets (with filters) |
+| `GET /api/assets/:id` | Asset detail with AI analysis |
+| `POST /api/assets/:id/analyze` | Trigger AI re-analysis |
+| `POST /api/assets/:id/confirm` | Confirm listing after AI review |
+| `GET /api/assets/:id/tokens` | View available tokens |
+| `POST /api/assets/:id/tokens/buy` | Buy tokens with Averon Coin |
+| `GET /api/market/orderbook` | P2P order book |
+| `POST /api/market/sell` | Place sell order |
+| `POST /api/market/buy` | Place buy order |
+| `GET /api/dashboard` | Platform-wide stats |
+
+**Existing endpoints kept** (backward compatible):
+- `/api/account`, `/api/blockchain/*`, `/api/buy-direct`, etc.
+
+---
+
+### Frontend Overhaul
+
+#### [MODIFY] [index.html](file:///d:/Averon/frontend/index.html)
+
+**New pages/sections:**
+
+1. **Asset Submission Flow** (multi-step)
+   - Step 1: Enter asset details (title, category, description, raise amount)
+   - Step 2: Upload documents (drag & drop, multiple files)
+   - Step 3: AI Analysis (live progress → shows valuation, risk score, token proposal)
+   - Step 4: Confirm & List
+
+2. **Asset Detail Page** (expanded)
+   - AI analysis badge (verified ✓ / risk score)
+   - Token grid — visual representation of all tokens (owned vs available)
+   - Buy tokens interface
+   - Document previews
+   - Funding progress with auto-payout indicator
+
+3. **P2P Marketplace Page**
+   - Buy/sell order book (bid/ask spread)
+   - Place orders
+   - Trade history
+   - Live coin price chart
+
+4. **Enhanced Dashboard/Home**
+   - Platform TVL (Total Value Locked)
+   - Total assets tokenized
+   - Active raises
+   - Coin price + volume chart
+   - Recent AI-verified assets
+
+#### [MODIFY] [app.js](file:///d:/Averon/frontend/app.js)
+- Multi-step asset submission with file upload
+- AI analysis polling & live status
+- Token grid rendering
+- Order book rendering
+- Trade execution UI
+
+#### [MODIFY] [style.css](file:///d:/Averon/frontend/style.css)
+- Document upload dropzone styles
+- AI analysis card with risk meter
+- Token grid (visual blocks)
+- Order book table styles
+- Multi-step form wizard
+
+---
+
+### New Dependencies
+
+#### [MODIFY] [package.json](file:///d:/Averon/package.json)
+
+```json
+{
+  "dependencies": {
+    "express": "^4.18.2",
+    "better-sqlite3": "^11.0.0",
+    "multer": "^1.4.5-lts.1",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "razorpay": "^2.9.4"
+  }
+}
+```
+
+- `better-sqlite3` — Embedded SQLite database (no server needed)
+- `multer` — File upload middleware
+
+> [!NOTE]
+> Gemini API calls use Node.js built-in `fetch` (no additional dependency needed).
+
+---
+
+### Environment Variables
+
+#### [MODIFY] [.env](file:///d:/Averon/.env)
+
+```env
+PORT=4200
+GEMINI_API_KEY=your_gemini_api_key_here
+RAZORPAY_KEY_ID=your_key
+RAZORPAY_KEY_SECRET=your_secret
+```
+
+> [!IMPORTANT]
+> **Without `GEMINI_API_KEY`**, the AI engine will use a simulated fallback that estimates asset values based on category averages and document metadata (file count, file sizes). The platform will still work, just without real AI verification.
+
+---
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Gemini API Key** — Do you have a Gemini API key to use for AI document analysis? Without it, I'll implement a simulated AI that gives realistic-looking results based on asset category and document metadata. You can add a real key later.
+
+> [!IMPORTANT]
+> **Asset Categories** — I've planned for: Stocks/Shares, Land/Real Estate, Agricultural Commodities, Shop Inventory, Equipment, Invoices/Bills, Vehicles, Precious Metals, Other. Should I add or remove any?
+
+> [!IMPORTANT]
+> **File Storage** — Currently documents will be stored locally in `uploads/`. For production, you'd want cloud storage (S3, etc.). Is local storage fine for now?
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- Database schema creation & CRUD operations
+- AI engine with simulated fallback
+- Tokenization math (different scenarios)
+- P2P order matching
+
+### Manual Verification
+- Full flow: Create account → Buy coins → Submit asset → AI analyzes → Tokens created → Invest → Asset funded → Payout
+- P2P: Place sell order → Another account places buy order → Trade executes
+- Block explorer shows all transactions
+- Edge cases: partial funding, expired assets, risk levels
