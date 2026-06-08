@@ -1,0 +1,487 @@
+# Averon v4 — Enterprise-Grade Asset Tokenization Platform
+
+This is a ground-up rebuild treating Averon as real financial infrastructure. Every module is built with proper security, validation, error handling, and audit trails.
+
+## Architecture Overview
+
+```mermaid
+graph TB
+    subgraph Client
+        UI["Web Frontend"]
+        WS["WebSocket Client"]
+    end
+    subgraph API Gateway
+        Auth["Auth Middleware<br/>JWT + Rate Limiting"]
+        Routes["Express Routes"]
+        Validate["Input Validation"]
+    end
+    subgraph Core Services
+        UserSvc["User Service<br/>KYC · Profiles"]
+        AssetSvc["Asset Service<br/>Lifecycle · Compliance"]
+        TokenSvc["Token Service<br/>Minting · Transfer"]
+        TradeSvc["Trading Engine<br/>Order Book · Settlement"]
+        AISvc["AI Pipeline<br/>Analysis · Fraud"]
+        PaySvc["Payment Service<br/>Razorpay · Payouts"]
+    end
+    subgraph Blockchain Layer
+        Chain["Blockchain Engine"]
+        Merkle["Merkle Tree"]
+        Wallet["Wallet Manager"]
+        Consensus["Consensus Engine"]
+    end
+    subgraph Data Layer
+        SQLite["SQLite Database<br/>20+ Tables"]
+        ChainStore["Chain Storage"]
+        FileStore["Document Storage"]
+        AuditLog["Audit Log"]
+    end
+    subgraph Real-time
+        WSServer["WebSocket Server"]
+        Events["Event Bus"]
+    end
+    
+    UI --> Auth
+    WS --> WSServer
+    Auth --> Routes
+    Routes --> Validate
+    Validate --> UserSvc & AssetSvc & TokenSvc & TradeSvc & AISvc & PaySvc
+    AssetSvc --> AISvc
+    TokenSvc --> Chain
+    TradeSvc --> Chain
+    AISvc --> Chain
+    UserSvc --> SQLite
+    AssetSvc --> SQLite & FileStore
+    TradeSvc --> SQLite
+    Chain --> ChainStore & Merkle & Consensus
+    Wallet --> ChainStore
+    Events --> WSServer
+    UserSvc & AssetSvc & TradeSvc --> Events
+    Routes --> AuditLog
+```
+
+---
+
+## Phase 1: Security & Infrastructure Foundation
+
+Everything starts with security. No financial platform survives without it.
+
+### [NEW] `backend/middleware/auth.js`
+- **JWT authentication** — access tokens (15min) + refresh tokens (7d)
+- **Password hashing** — bcrypt with salt rounds 12
+- **Session management** — token blacklist for logout
+- **Role-based access** — `user`, `admin`, `auditor`
+- User login with email/password or wallet signature
+
+### [NEW] `backend/middleware/rateLimiter.js`
+- Per-IP rate limiting (100 req/min general, 10 req/min for auth)
+- Per-user rate limiting for financial operations (5 orders/sec)
+- DDoS protection with sliding window
+
+### [NEW] `backend/middleware/validator.js`
+- Input sanitization on ALL endpoints (prevent SQL injection, XSS)
+- Schema validation for every request body (type checking, bounds)
+- File upload validation (magic bytes, not just extension)
+
+### [NEW] `backend/middleware/audit.js`
+- Logs EVERY state-changing API call with: who, what, when, from where, request body, response code
+- Tamper-proof audit log (hashed chain — each entry hashes the previous)
+- Separate audit database table with forensic detail
+
+### [NEW] `backend/config/security.js`
+- CORS configuration (whitelist origins)
+- Helmet.js headers (CSP, HSTS, X-Frame, etc.)
+- Request size limits
+- Secure cookie settings
+
+### [MODIFY] `database.js`
+Expand to **25+ tables** with proper foreign keys, indexes, and constraints:
+
+**New tables:**
+| Table | Purpose |
+|-------|---------|
+| `sessions` | JWT refresh tokens, device info |
+| `audit_log` | Tamper-proof action log |
+| `kyc_records` | Identity verification data |
+| `escrow_accounts` | Per-asset escrow with status tracking |
+| `fee_ledger` | Platform fee collection records |
+| `notifications` | User notifications (read/unread) |
+| `system_config` | Runtime configuration (fee rates, limits) |
+| `price_snapshots` | High-resolution price history (1-min candles) |
+| `asset_valuations` | AI valuation history per asset |
+| `compliance_checks` | Regulatory compliance records |
+
+**Indexes** on every foreign key and frequently queried column.
+
+---
+
+## Phase 2: Enhanced Blockchain Engine
+
+The current blockchain is functional but needs enterprise features.
+
+### [MODIFY] `blockchain.js`
+
+**Merkle Tree:**
+- Each block stores a Merkle root of its transactions
+- Allows efficient verification of any single transaction without downloading the full block
+- `getMerkleProof(txHash)` → returns proof path
+- `verifyMerkleProof(txHash, proof, root)` → boolean
+
+**Enhanced Block Structure:**
+```javascript
+{
+  index: 1,
+  version: 1,
+  timestamp: 1718000000000,
+  previousHash: "00a3f8...",
+  merkleRoot: "7b2e9c...",    // NEW
+  transactions: [...],
+  nonce: 4521,
+  hash: "003f1a...",
+  difficulty: 2,
+  size: 2048,                  // NEW: block size in bytes
+  miner: "0x..."               // NEW: who mined this block
+}
+```
+
+**Transaction Types (expanded):**
+| Type | Description |
+|------|-------------|
+| `MINT` | New coins created |
+| `TRANSFER` | P2P coin transfer |
+| `INVEST` | User → Escrow (buy tokens) |
+| `DIVEST` | Escrow → User (sell tokens back) |
+| `PAYOUT` | Escrow → Asset Owner (funded) |
+| `REFUND` | Escrow → Investors (expired) |
+| `FEE` | Transaction → Platform fee wallet |
+| `ASSET_CREATE` | Asset listing record |
+| `ASSET_VERIFY` | AI verification record |
+| `ASSET_CLOSE` | Asset closure/completion |
+| `TRADE` | P2P coin trade execution |
+| `REWARD` | Mining reward |
+
+**Chain Validation (enhanced):**
+- Validate Merkle roots
+- Validate transaction signatures
+- Validate UTXO consistency (no double-spend)
+- Validate block timestamps (must be after previous, not too far in future)
+
+### [NEW] `backend/blockchain/merkle.js`
+- Complete Merkle tree implementation
+- Build tree from transaction hashes
+- Generate and verify inclusion proofs
+- Serialization/deserialization
+
+### [NEW] `backend/blockchain/consensus.js`
+- Difficulty adjustment algorithm (adjust every 10 blocks based on time)
+- Block validation rules
+- Chain selection rule (longest valid chain wins)
+- Fork detection and resolution
+
+---
+
+## Phase 3: AI Analysis Pipeline (Production-Grade)
+
+### [MODIFY] `ai-engine.js` → `backend/services/aiPipeline.js`
+
+Multi-stage analysis pipeline, not a single API call:
+
+**Stage 1: Document Ingestion**
+- Extract text from images (OCR via Gemini vision)
+- Extract text from PDFs
+- Classify document types (share certificate, land deed, invoice, etc.)
+- Detect document language
+
+**Stage 2: Legitimacy Verification**
+- Cross-reference document patterns with known formats
+- Check for tampering indicators (AI-detected)
+- Verify dates, amounts, signatures are consistent
+- Flag suspicious patterns
+
+**Stage 3: Valuation**
+- Category-specific valuation models
+- Compare with market data (if available)
+- Apply depreciation/appreciation factors
+- Generate confidence interval (not just a point estimate)
+
+**Stage 4: Risk Assessment**
+- Multi-factor risk model:
+  - Document quality score (0-100)
+  - Asset category risk profile
+  - Raise-to-value ratio
+  - Owner history (if applicable)
+  - Market conditions
+- Output: risk score, risk factors breakdown, recommendation
+
+**Stage 5: Tokenization Recommendation**
+- Optimal token count based on raise amount and risk
+- Token price recommendation
+- Minimum investment threshold
+- Expected funding timeline
+
+**Stage 6: Fraud Detection**
+- Duplicate document detection (hash comparison with previous uploads)
+- Cross-reference asset titles for duplicates
+- Flag suspicious patterns in raise amount vs. valuation
+- Alert system for manual review if confidence < 60%
+
+### [NEW] `backend/services/documentProcessor.js`
+- File validation (magic bytes, not just MIME type)
+- Image preprocessing for AI analysis
+- Document metadata extraction
+- Secure file storage with encryption at rest
+
+---
+
+## Phase 4: Asset Lifecycle Management
+
+### [NEW] `backend/services/assetService.js`
+
+Full lifecycle with state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: Create
+    draft --> documents_uploaded: Upload Docs
+    documents_uploaded --> ai_analyzing: Trigger AI
+    ai_analyzing --> verified: AI Approved
+    ai_analyzing --> rejected: AI Rejected
+    rejected --> draft: Re-edit
+    verified --> compliance_review: Auto-check
+    compliance_review --> active: Passed
+    compliance_review --> flagged: Issues Found
+    flagged --> active: Admin Override
+    active --> funding: First Investment
+    funding --> funded: 100% Tokens Sold
+    funding --> expired: Deadline Passed
+    funded --> payout_pending: Auto-trigger
+    payout_pending --> completed: Payout Done
+    expired --> refunding: Auto-trigger
+    refunding --> closed: All Refunded
+```
+
+**Escrow System:**
+- Each asset gets a dedicated escrow address on the blockchain
+- Coins locked in escrow when tokens are purchased
+- Escrow releases ONLY when: (a) fully funded → to owner, or (b) expired → refund to investors
+- Double-entry bookkeeping — every movement has a debit and credit
+
+**Compliance Checks:**
+- Raise amount limits (configurable)
+- Maximum exposure per investor (can't put > X% of portfolio in one asset)
+- Cooling-off period after listing (24h before investments open)
+- Mandatory description length and document requirements
+
+### [NEW] `backend/services/escrowService.js`
+- Create escrow accounts per asset
+- Lock/unlock funds
+- Auto-release on conditions met
+- Refund processing on expiry
+
+### [NEW] `backend/services/complianceService.js`
+- Pre-listing compliance checks
+- Investor exposure limits
+- Transaction monitoring
+- Suspicious activity reports
+
+---
+
+## Phase 5: Financial Engine
+
+### [NEW] `backend/services/tradingEngine.js`
+
+Professional-grade order matching:
+
+**Order Types:**
+- Market order (execute at best available price)
+- Limit order (execute at specified price or better)
+- Stop order (trigger when price hits threshold)
+
+**Order Book:**
+- Price-time priority matching (FIFO at each price level)
+- Partial fills supported
+- Order modification and cancellation
+- Order expiry (GTC, GTD, IOC, FOK)
+
+**Settlement:**
+- T+0 settlement (instant on blockchain)
+- Settlement creates blockchain TRADE transactions
+- Both parties' balances updated atomically
+- Settlement fee deducted (configurable, e.g., 0.1%)
+
+**Price Engine:**
+- Last trade price as spot price
+- VWAP (Volume Weighted Average Price) calculation
+- Price impact estimation for large orders
+- Circuit breakers (halt trading if price moves > 10% in 1 hour)
+
+### [NEW] `backend/services/feeService.js`
+- Platform fee structure:
+  - Trading fee: 0.1% per trade
+  - Asset listing fee: flat fee in AC
+  - Capital raise fee: 1% of raised amount
+  - Withdrawal fee: flat fee
+- Fee collection to platform wallet
+- Fee reporting and analytics
+
+### [NEW] `backend/services/priceService.js`
+- Real-time price calculation from order book
+- OHLCV candle generation (1min, 5min, 1h, 1d)
+- Moving averages (SMA, EMA)
+- Price alerts system
+- Historical price queries
+
+---
+
+## Phase 6: Admin & Monitoring
+
+### [NEW] `frontend/admin.html` + `frontend/admin.js`
+
+Full admin dashboard:
+
+**Sections:**
+1. **System Overview** — Users, assets, volume, chain health, memory usage
+2. **User Management** — View all users, balances, KYC status, freeze accounts
+3. **Asset Review** — Pending assets, AI analysis review, approve/reject
+4. **Transaction Monitor** — Live transaction feed, flag suspicious
+5. **Chain Health** — Block explorer (enhanced), validation status, pending tx pool
+6. **Financial Reports** — Revenue (fees), volume, TVL, AUM
+7. **System Config** — Fee rates, listing limits, difficulty, rate limits
+
+### [NEW] `backend/middleware/adminAuth.js`
+- Admin-only route protection
+- Admin actions logged with elevated audit detail
+- Multi-admin support
+
+---
+
+## Phase 7: Real-Time & WebSocket
+
+### [NEW] `backend/services/eventBus.js`
+- In-memory event system
+- Events: `BLOCK_MINED`, `TRADE_EXECUTED`, `ASSET_FUNDED`, `PRICE_UPDATED`, `ORDER_PLACED`
+
+### [NEW] `backend/services/wsServer.js`
+- WebSocket server on same port
+- Channels: `price`, `trades`, `blocks`, `assets`, `orders`
+- User-specific channels for portfolio updates
+- Heartbeat/reconnection handling
+
+### [MODIFY] Frontend
+- WebSocket client for live updates
+- Live price ticker (no polling)
+- Live order book updates
+- Live block mining notifications
+- Toast notifications for portfolio events
+
+---
+
+## Phase 8: Testing & Hardening
+
+### [NEW] `tests/` directory
+- **Unit tests**: Blockchain, Merkle tree, order matching, fee calculation
+- **Integration tests**: Full API flow (create account → buy coins → list asset → AI analyze → invest → fund → payout)
+- **Security tests**: SQL injection attempts, XSS, auth bypass, rate limiting
+- **Load tests**: Concurrent orders, chain integrity under load
+
+### [NEW] `scripts/` directory
+- `seed.js` — Populate database with sample data (10 users, 5 assets, 50 transactions)
+- `reset.js` — Clean reset of all data
+- `benchmark.js` — Performance benchmarks
+
+---
+
+## File Structure (Final)
+
+```
+d:\Averon\
+├── backend\
+│   ├── blockchain\
+│   │   ├── chain.js          # Core blockchain engine
+│   │   ├── block.js          # Block class
+│   │   ├── transaction.js    # Transaction class  
+│   │   ├── wallet.js         # Wallet + key management
+│   │   ├── merkle.js         # Merkle tree
+│   │   └── consensus.js      # Difficulty + validation
+│   ├── services\
+│   │   ├── userService.js    # User + KYC
+│   │   ├── assetService.js   # Asset lifecycle
+│   │   ├── tokenService.js   # Token minting/transfer
+│   │   ├── tradingEngine.js  # Order book + matching
+│   │   ├── aiPipeline.js     # Multi-stage AI analysis
+│   │   ├── escrowService.js  # Escrow management
+│   │   ├── feeService.js     # Fee calculation
+│   │   ├── priceService.js   # Price engine
+│   │   ├── complianceService.js # Regulatory checks
+│   │   ├── documentProcessor.js # File handling
+│   │   ├── eventBus.js       # Event system
+│   │   └── wsServer.js       # WebSocket
+│   ├── middleware\
+│   │   ├── auth.js           # JWT authentication
+│   │   ├── adminAuth.js      # Admin protection
+│   │   ├── rateLimiter.js    # Rate limiting
+│   │   ├── validator.js      # Input validation
+│   │   └── audit.js          # Audit logging
+│   ├── routes\
+│   │   ├── authRoutes.js     # Login/register/logout
+│   │   ├── userRoutes.js     # User profile/KYC
+│   │   ├── assetRoutes.js    # Asset CRUD + lifecycle
+│   │   ├── tokenRoutes.js    # Token operations
+│   │   ├── tradeRoutes.js    # Trading endpoints
+│   │   ├── marketRoutes.js   # Order book/market data
+│   │   ├── blockchainRoutes.js # Explorer endpoints
+│   │   └── adminRoutes.js    # Admin endpoints
+│   └── config\
+│       ├── database.js       # SQLite + 25 tables
+│       ├── security.js       # Security settings
+│       └── constants.js      # System-wide constants
+├── frontend\
+│   ├── index.html            # Main app
+│   ├── admin.html            # Admin dashboard
+│   ├── style.css             # Main styles
+│   ├── admin.css             # Admin styles
+│   ├── app.js                # Main app logic
+│   ├── admin.js              # Admin logic
+│   └── ws.js                 # WebSocket client
+├── tests\
+│   ├── blockchain.test.js
+│   ├── trading.test.js
+│   └── api.test.js
+├── scripts\
+│   ├── seed.js
+│   ├── reset.js
+│   └── benchmark.js
+├── uploads\                  # Document storage
+├── data\                     # Database + chain files
+├── server.js                 # Entry point
+├── package.json
+└── .env
+```
+
+---
+
+## Implementation Order
+
+| Phase | What | Est. Files | Priority |
+|-------|------|-----------|----------|
+| **1** | Security & Infrastructure | 8 files | 🔴 Critical |
+| **2** | Enhanced Blockchain | 5 files | 🔴 Critical |
+| **3** | AI Pipeline | 3 files | 🟡 High |
+| **4** | Asset Lifecycle | 4 files | 🟡 High |
+| **5** | Financial Engine | 4 files | 🟡 High |
+| **6** | Admin Panel | 4 files | 🟢 Medium |
+| **7** | Real-Time WebSocket | 3 files | 🟢 Medium |
+| **8** | Testing & Scripts | 6 files | 🟢 Medium |
+
+> [!IMPORTANT]
+> **Total: ~40 files, ~8000+ lines of backend code, ~3000+ lines of frontend code.** This is a real enterprise build. Each phase will be built thoroughly with proper error handling, validation, and documentation. I'll work through each phase methodically.
+
+## Open Questions
+
+> [!IMPORTANT]
+> **Should I start with Phase 1 (Security) now?** This is the foundation — JWT auth, rate limiting, input validation, audit logging. Everything else depends on this being solid.
+
+> [!IMPORTANT]
+> **Admin access** — How should the admin account be created? Options: (a) First registered user becomes admin, (b) Environment variable with admin credentials, (c) Admin setup wizard on first launch.
+
+> [!IMPORTANT]
+> **Gemini API Key** — Do you have one ready? The AI pipeline is a major differentiator. Without it, the fallback simulation still works but won't analyze real documents.
